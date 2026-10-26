@@ -26,3 +26,8 @@ npm run dev
 The "Stan" switch at the bottom (or `?state=empty` / `?state=error`) toggles: data, empty, error.
 Natural empty states too: future months / 2024 have no documents; filters that match nothing show "Wyczyść filtry".
 Loading uses a skeleton.
+
+## Round 2 — interactive overview
+- **Month strip**: the period picker became a 12-month bar chart of gross turnover (VAT is the darker part of each bar). Click a bar or use ←/→ to switch the month. It shows the change vs. the previous month and the year total.
+- **KSeF progress**: a ring shows how many documents of the period have a KSeF number. "Pokaż oczekujące" filters the pending ones; "Wyślij do KSeF" simulates sending — rows switch to *W trakcie* → *Potwierdzony* live.
+- **Day grouping**: sorted by date, the list is grouped by day with a header showing the weekday, document count and day total.

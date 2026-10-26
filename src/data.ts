@@ -25,6 +25,10 @@ export const MONTHS = [
   'styczeń', 'luty', 'marzec', 'kwiecień', 'maj', 'czerwiec',
   'lipiec', 'sierpień', 'wrzesień', 'październik', 'listopad', 'grudzień',
 ]
+export const MONTHS_GEN = [
+  'stycznia', 'lutego', 'marca', 'kwietnia', 'maja', 'czerwca',
+  'lipca', 'sierpnia', 'września', 'października', 'listopada', 'grudnia',
+]
 export const MONTHS_SHORT = ['sty', 'lut', 'mar', 'kwi', 'maj', 'cze', 'lip', 'sie', 'wrz', 'paź', 'lis', 'gru']
 export const YEARS = [2024, 2025, 2026]
 
@@ -52,6 +56,8 @@ function rng(seed: number) {
   }
 }
 
+// Several documents share a day, so the day-grouped list reads naturally
+const DAYS = [1, 1, 2, 5, 5, 5, 7, 9, 12, 12, 14, 19, 19, 21, 26, 27]
 const NAMES = ['Alfa', 'Beta', 'Gamma', 'Delta', 'Omega']
 
 function generate(kind: Kind, year: number, month: number): Doc[] {
@@ -70,7 +76,7 @@ function generate(kind: Kind, year: number, month: number): Doc[] {
     const vat = Math.round(net * RATE_VALUE[rate] * 100) / 100
     const roll = r()
     const ksefStatus: KsefStatus = year === 2026 ? 'missing' : roll < 0.8 ? 'confirmed' : roll < 0.9 ? 'pending' : 'missing'
-    const day = String(Math.min(28, i * 2 - (i > 9 ? 9 : 1))).padStart(2, '0')
+    const day = String(DAYS[i - 1]).padStart(2, '0')
     const prefix = kind === 'sales' ? 'S' : 'Z'
     const name = `Demo ${NAMES[(i - 1) % 5]} ${String(i).padStart(2, '0')}`
     docs.push({
@@ -107,8 +113,32 @@ export function loadDocs(kind: Kind, year: number, month: number, mode: LoadMode
   })
 }
 
+export interface MonthTotal { gross: number; vat: number; count: number }
+
+/** Per-month totals of a year, used by the month strip chart. */
+export function yearTotals(kind: Kind, year: number, mode: LoadMode): MonthTotal[] {
+  return MONTHS.map((_, m) => {
+    const docs = mode === 'ok' ? generate(kind, year, m) : []
+    return {
+      gross: docs.reduce((a, d) => a + d.gross, 0),
+      vat: docs.reduce((a, d) => a + d.vat, 0),
+      count: docs.length,
+    }
+  })
+}
+
+export const ksefNumberFor = (d: Doc) =>
+  `${d.date.replace(/-/g, '')}-EE-${(parseInt(d.nip, 10) * 7919).toString(16).toUpperCase().slice(-10)}`
+
 const money = new Intl.NumberFormat('pl-PL', { style: 'currency', currency: 'PLN' })
 export const fmt = (n: number) => money.format(n)
+export const fmtShort = (n: number) =>
+  Math.abs(n) >= 1000 ? `${(n / 1000).toLocaleString('pl-PL', { maximumFractionDigits: 1 })} tys.` : `${Math.round(n)}`
+export const fmtDay = (iso: string) => {
+  const [y, m, d] = iso.split('-').map(Number)
+  const wd = new Date(y, m - 1, d).toLocaleDateString('pl-PL', { weekday: 'long' })
+  return { day: `${d} ${MONTHS_GEN[m - 1]}`, weekday: wd }
+}
 export const fmtDate = (iso: string) => {
   const [y, m, d] = iso.split('-')
   return `${Number(d)} ${MONTHS_SHORT[Number(m) - 1]} ${y}`

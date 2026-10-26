@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronLeft, ChevronRight,
   Columns3, Download, FileSearch, FileText, Info, MoreHorizontal, Printer, RefreshCw,
-  Search, SlidersHorizontal, Tag, X, Sun, Moon, CalendarDays, ShieldCheck, Inbox,
+  Search, SlidersHorizontal, Tag, X, Sun, Moon, Send, CircleCheck, ShieldCheck, Inbox,
 } from 'lucide-react'
 import {
   Doc, Kind, KsefStatus, LoadMode, VatRate, MONTHS, YEARS, OP_TYPES, JPK_CODES, SERIES, LABELS,
-  RATE_LABEL, KSEF_LABEL, loadDocs, fmt, fmtDate,
+  RATE_LABEL, KSEF_LABEL, MONTHS_SHORT, MonthTotal, loadDocs, yearTotals, ksefNumberFor, fmt, fmtDate, fmtDay, fmtShort,
 } from './data'
 import { Chip, Popover, Sheet } from './ui'
 
@@ -76,6 +76,8 @@ export default function App() {
   const [error, setError] = useState('')
   const [docs, setDocs] = useState<Doc[]>([])
   const [labelEdits, setLabelEdits] = useState<Record<string, string[]>>({})
+  const [ksefEdits, setKsefEdits] = useState<Record<string, { status: KsefStatus; number?: string }>>({})
+  const [sending, setSending] = useState(false)
   const [reload, setReload] = useState(0)
 
   const [query, setQuery] = useState('')
@@ -114,7 +116,16 @@ export default function App() {
 
   useEffect(() => setPage(1), [kind, year, month, query, filters, perPage])
 
-  const allDocs = useMemo(() => docs.map((d) => (labelEdits[d.id] ? { ...d, labels: labelEdits[d.id] } : d)), [docs, labelEdits])
+  const allDocs = useMemo(
+    () =>
+      docs.map((d) => {
+        const k = ksefEdits[d.id]
+        const withLabels = labelEdits[d.id] ? { ...d, labels: labelEdits[d.id] } : d
+        return k ? { ...withLabels, ksefStatus: k.status, ksefNumber: k.number } : withLabels
+      }),
+    [docs, labelEdits, ksefEdits],
+  )
+  const totals = useMemo(() => yearTotals(kind, year, mode), [kind, year, mode])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -150,7 +161,6 @@ export default function App() {
     else if (m >= 0 && m <= 11) setMonth(m)
   }
   const canPrev = !(year === YEARS[0] && month === 0)
-  const canNext = !(year === YEARS[YEARS.length - 1] && month === 11)
 
   const toggleSort = (key: ColKey) =>
     setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }))
@@ -182,6 +192,26 @@ export default function App() {
 
   const selectedDocs = allDocs.filter((d) => selected.has(d.id))
 
+  const ksefTodo = allDocs.filter((d) => d.ksefStatus !== 'confirmed')
+  const sendToKsef = async () => {
+    setSending(true)
+    for (const d of ksefTodo) {
+      setKsefEdits((e) => ({ ...e, [d.id]: { status: 'pending' } }))
+      await new Promise((r) => setTimeout(r, 260))
+      setKsefEdits((e) => ({ ...e, [d.id]: { status: 'confirmed', number: ksefNumberFor(d) } }))
+    }
+    setSending(false)
+  }
+  const ksefFilterOn = filters.ksef.length > 0
+  const toggleKsefFilter = () => setFilters({ ...filters, ksef: ksefFilterOn ? [] : ['missing', 'pending'] })
+
+  const grouped = sort.key === 'date'
+  const groups = grouped ? dayGroups(pageDocs) : [{ date: '', docs: pageDocs }]
+  const dayStats = (date: string) => {
+    const ds = filtered.filter((d) => d.date === date)
+    return { count: ds.length, gross: ds.reduce((a, d) => a + d.gross, 0) }
+  }
+
   return (
     <div className="page">
       {/* ---------- header ---------- */}
@@ -194,12 +224,6 @@ export default function App() {
           </div>
         </div>
         <div className="head-side">
-        <PeriodPicker
-          year={year} month={month} label={periodName}
-          onPick={(y, m) => (setYear(y), setMonth(m))}
-          onPrev={canPrev ? () => shiftMonth(-1) : undefined}
-          onNext={canNext ? () => shiftMonth(1) : undefined}
-        />
         <button
           className="icon-btn"
           onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
@@ -220,8 +244,24 @@ export default function App() {
         <span className="seg-thumb" style={{ transform: `translateX(${kind === 'sales' ? 0 : 100}%)` }} />
       </div>
 
-      {/* ---------- summary ---------- */}
-      <Summary status={status} docs={filtered} narrowed={hasNarrowing} />
+      {/* ---------- overview ---------- */}
+      <MonthStrip
+        totals={totals} year={year} month={month} kind={kind}
+        onPick={setMonth}
+        onShift={shiftMonth}
+        onYear={(d) => setYear(year + d)}
+        canPrevYear={year > YEARS[0]} canNextYear={year < YEARS[YEARS.length - 1]}
+      />
+      <div className="overview">
+        <Summary status={status} docs={filtered} narrowed={hasNarrowing} />
+        {status === 'ok' && allDocs.length > 0 && (
+          <KsefCard
+            confirmed={allDocs.length - ksefTodo.length} total={allDocs.length}
+            sending={sending} onSend={sendToKsef}
+            filterOn={ksefFilterOn} onToggleFilter={toggleKsefFilter}
+          />
+        )}
+      </div>
 
       {/* ---------- toolbar ---------- */}
       <div className="toolbar">
@@ -336,7 +376,14 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {pageDocs.map((d) => (
+                {groups.map((g) => (
+                  <Fragment key={g.date || 'all'}>
+                  {g.date && (
+                    <tr className="day-row">
+                      <td colSpan={visibleCols.length + 2}><DayHead date={g.date} {...dayStats(g.date)} /></td>
+                    </tr>
+                  )}
+                  {g.docs.map((d) => (
                   <tr key={d.id} className={selected.has(d.id) ? 'sel' : ''} onClick={() => setOpenId(d.id)}>
                     <td className="col-check" onClick={(e) => e.stopPropagation()}>
                       <input type="checkbox" checked={selected.has(d.id)} onChange={() => toggleSel(d.id)} aria-label={`Zaznacz ${d.number}`} />
@@ -348,12 +395,17 @@ export default function App() {
                     ))}
                     <td className="col-end"><ChevronRight size={16} className="faint" /></td>
                   </tr>
+                  ))}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
 
             <ul className="cards">
-              {pageDocs.map((d) => (
+              {groups.map((g) => (
+                <Fragment key={g.date || 'all'}>
+                {g.date && <li className="day-head"><DayHead date={g.date} {...dayStats(g.date)} /></li>}
+                {g.docs.map((d) => (
                 <li key={d.id} className={selected.has(d.id) ? 'sel' : ''}>
                   <input type="checkbox" checked={selected.has(d.id)} onChange={() => toggleSel(d.id)} aria-label={`Zaznacz ${d.number}`} />
                   <button className="card-row" onClick={() => setOpenId(d.id)}>
@@ -361,13 +413,15 @@ export default function App() {
                       <strong>{d.contractor}</strong>
                       <span className={`amount ${d.gross < 0 ? 'neg' : ''}`}>{fmt(d.gross)}</span>
                     </span>
-                    <span className="cr-sub">{d.number} · {fmtDate(d.date)}</span>
+                    <span className="cr-sub">{grouped ? d.number : `${d.number} · ${fmtDate(d.date)}`}</span>
                     <span className="cr-meta">
                       <KsefBadge status={d.ksefStatus} />
                       {d.labels.map((l) => <span key={l} className="label">{l}</span>)}
                     </span>
                   </button>
                 </li>
+                ))}
+                </Fragment>
               ))}
             </ul>
 
@@ -470,39 +524,120 @@ function ContextBadge({ confirmed, onConfirm }: { confirmed: boolean; onConfirm:
   )
 }
 
-function PeriodPicker({ year, month, label, onPick, onPrev, onNext }: {
-  year: number; month: number; label: string; onPick: (y: number, m: number) => void; onPrev?: () => void; onNext?: () => void
-}) {
-  const [viewYear, setViewYear] = useState(year)
+function dayGroups(docs: Doc[]) {
+  const out: { date: string; docs: Doc[] }[] = []
+  docs.forEach((d) => {
+    const last = out[out.length - 1]
+    if (last && last.date === d.date) last.docs.push(d)
+    else out.push({ date: d.date, docs: [d] })
+  })
+  return out
+}
+
+function DayHead({ date, count, gross }: { date: string; count: number; gross: number }) {
+  const { day, weekday } = fmtDay(date)
   return (
-    <div className="period">
-      <button className="icon-btn ghost sm" onClick={onPrev} disabled={!onPrev} aria-label="Poprzedni miesiąc"><ChevronLeft size={18} /></button>
-      <Popover
-        trigger={({ toggle, open }) => (
-          <button className="period-btn" onClick={() => (setViewYear(year), toggle())} aria-expanded={open} aria-label="Wybierz okres">
-            <CalendarDays size={16} /> <span>{label}</span> <ChevronDown size={15} className="faint" />
-          </button>
-        )}
+    <div className="day">
+      <span><b>{day}</b> <span className="muted">{weekday}</span></span>
+      <span className="muted">{count} dok. · <span className="amount">{fmt(gross)}</span></span>
+    </div>
+  )
+}
+
+function MonthStrip({ totals, year, month, kind, onPick, onShift, onYear, canPrevYear, canNextYear }: {
+  totals: MonthTotal[]; year: number; month: number; kind: Kind
+  onPick: (m: number) => void; onShift: (d: number) => void; onYear: (d: number) => void
+  canPrevYear: boolean; canNextYear: boolean
+}) {
+  const max = Math.max(...totals.map((t) => t.gross), 1)
+  const yearGross = totals.reduce((a, t) => a + t.gross, 0)
+  const cur = totals[month]
+  const prev = month > 0 ? totals[month - 1] : null
+  const delta = prev && prev.gross && cur.gross ? Math.round(((cur.gross - prev.gross) / prev.gross) * 100) : null
+  return (
+    <section className="card strip" aria-label="Okres rozliczeniowy">
+      <div className="strip-head">
+        <div>
+          <span className="eyebrow">Okres · {kind === 'sales' ? 'sprzedaż' : 'zakupy'}</span>
+          <div className="strip-title">
+            <span className="cap">{MONTHS[month]}</span> <span className="title-year">{year}</span>
+            {delta !== null && (
+              <span className={`delta ${delta >= 0 ? 'up' : 'down'}`} title="Zmiana brutto względem poprzedniego miesiąca">
+                {delta >= 0 ? <ArrowUp size={12} /> : <ArrowDown size={12} />}{Math.abs(delta)}%
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="year-switch">
+          <button className="icon-btn ghost sm" disabled={!canPrevYear} onClick={() => onYear(-1)} aria-label="Poprzedni rok"><ChevronLeft size={16} /></button>
+          <div className="year-info"><b>{year}</b><span className="muted">{yearGross ? `${fmtShort(yearGross)} zł` : '—'}</span></div>
+          <button className="icon-btn ghost sm" disabled={!canNextYear} onClick={() => onYear(1)} aria-label="Następny rok"><ChevronRight size={16} /></button>
+        </div>
+      </div>
+      <div
+        className="months" role="listbox" aria-label="Miesiąc" tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowLeft') (e.preventDefault(), onShift(-1))
+          if (e.key === 'ArrowRight') (e.preventDefault(), onShift(1))
+        }}
       >
-        {(close) => (
-          <div className="month-grid">
-            <div className="mg-head">
-              <button className="icon-btn ghost sm" disabled={viewYear === YEARS[0]} onClick={() => setViewYear(viewYear - 1)} aria-label="Poprzedni rok"><ChevronLeft size={16} /></button>
-              <b>{viewYear}</b>
-              <button className="icon-btn ghost sm" disabled={viewYear === YEARS[YEARS.length - 1]} onClick={() => setViewYear(viewYear + 1)} aria-label="Następny rok"><ChevronRight size={16} /></button>
-            </div>
-            <div className="mg-body">
-              {MONTHS.map((m, i) => (
-                <button key={m} className={viewYear === year && i === month ? 'on' : ''} onClick={() => (onPick(viewYear, i), close())}>
-                  {m}
-                </button>
-              ))}
-            </div>
+        {totals.map((t, i) => (
+          <button
+            key={i} role="option" aria-selected={i === month} tabIndex={-1}
+            className={`m ${i === month ? 'on' : ''} ${t.count ? '' : 'empty'}`}
+            onClick={() => onPick(i)}
+            aria-label={`${MONTHS[i]} ${year}: ${t.count ? `${fmt(t.gross)}, ${t.count} dokumentów` : 'brak dokumentów'}`}
+          >
+            <span className="m-val">{t.count ? fmtShort(t.gross) : '—'}</span>
+            <span className="m-track">
+              <span className="m-bar" style={{ height: t.count ? `${Math.max(6, (t.gross / max) * 100)}%` : '3px' }}>
+                {t.count > 0 && <span className="m-vat" style={{ height: `${(t.vat / t.gross) * 100}%` }} />}
+              </span>
+            </span>
+            <span className="m-label">{MONTHS_SHORT[i]}</span>
+          </button>
+        ))}
+      </div>
+      <div className="strip-legend muted">
+        <span><i className="lg-gross" />Brutto</span>
+        <span><i className="lg-vat" />w tym VAT</span>
+      </div>
+    </section>
+  )
+}
+
+function KsefCard({ confirmed, total, sending, onSend, filterOn, onToggleFilter }: {
+  confirmed: number; total: number; sending: boolean; onSend: () => void; filterOn: boolean; onToggleFilter: () => void
+}) {
+  const done = confirmed === total
+  const R = 26
+  const C = 2 * Math.PI * R
+  return (
+    <section className={`card ksef-card ${done ? 'done' : ''}`} aria-live="polite">
+      <div className="ring">
+        <svg viewBox="0 0 64 64" aria-hidden="true">
+          <circle cx="32" cy="32" r={R} className="ring-bg" />
+          <circle cx="32" cy="32" r={R} className="ring-fg" strokeDasharray={C} strokeDashoffset={C * (1 - confirmed / total)} />
+        </svg>
+        <span>{done ? <CircleCheck size={22} /> : `${confirmed}/${total}`}</span>
+      </div>
+      <div className="ksef-body">
+        <b>{done ? 'Wszystko w KSeF' : 'Potwierdzenie w KSeF'}</b>
+        <span className="muted small">
+          {done ? 'Wszystkie dokumenty okresu mają numer KSeF.' : `${total - confirmed} z ${total} dokumentów czeka na numer KSeF.`}
+        </span>
+        {!done && (
+          <div className="ksef-actions">
+            <button className="btn btn-primary sm" onClick={onSend} disabled={sending}>
+              {sending ? <RefreshCw size={15} className="spin" /> : <Send size={15} />} {sending ? 'Wysyłanie…' : 'Wyślij do KSeF'}
+            </button>
+            <button className={`btn sm ${filterOn ? 'btn-tint' : ''}`} onClick={onToggleFilter} aria-pressed={filterOn}>
+              {filterOn ? 'Pokaż wszystkie' : 'Pokaż oczekujące'}
+            </button>
           </div>
         )}
-      </Popover>
-      <button className="icon-btn ghost sm" onClick={onNext} disabled={!onNext} aria-label="Następny miesiąc"><ChevronRight size={18} /></button>
-    </div>
+      </div>
+    </section>
   )
 }
 
